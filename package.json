@@ -1,0 +1,30 @@
+{
+  "name": "saas",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "server": "node sms-server.js"
+  },
+  "dependencies": {
+    "@sendgrid/mail": "^8.1.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "node-fetch": "^3.3.2",
+    "nodemailer": "^7.0.6",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "recharts": "^3.2.1",
+    "twilio": "^5.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "gh-pages": "^6.3.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}

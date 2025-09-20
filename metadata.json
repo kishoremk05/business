@@ -1,0 +1,5 @@
+{
+  "name": "saas",
+  "description": "A dashboard for business owners to manage and send review requests to their customers via a simulated SMS funnel. This application provides a client portal to track metrics, manage customer lists, and customize messaging.",
+  "requestFramePermissions": []
+}
