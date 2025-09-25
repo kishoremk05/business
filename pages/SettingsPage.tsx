@@ -84,6 +84,13 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
   const [smsSending, setSmsSending] = useState(false);
   const [waSendStatus, setWaSendStatus] = useState("");
   const [waSending, setWaSending] = useState(false);
+  const [waVerifyStatus, setWaVerifyStatus] = useState<string>("");
+  const [waContactStatus, setWaContactStatus] = useState<string>("");
+  const [waDebug, setWaDebug] = useState<boolean>(false);
+  // Simple template sending (name + language only)
+  const [waTemplateName, setWaTemplateName] = useState<string>("");
+  const [waTemplateLang, setWaTemplateLang] = useState<string>("en_US");
+  const [waTemplateStatus, setWaTemplateStatus] = useState<string>("");
 
   const handleSave = () => {
     setMessageTemplate(localSmsTemplate);
@@ -302,6 +309,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
             phoneNumberId: waPhoneNumberId,
             to: cust.phone,
             body: personalized,
+            ...(waDebug ? { debug: true } : {}),
           };
           const res = await fetch(endpoint, {
             method: "POST",
@@ -311,7 +319,11 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
           const data = await res.json().catch(() => ({}));
           if (!res.ok || !data.success) {
             const errMsg = data?.error || `HTTP ${res.status}`;
-            failures.push({ name: cust.name, phone: cust.phone, error: errMsg });
+            failures.push({
+              name: cust.name,
+              phone: cust.phone,
+              error: errMsg,
+            });
             onMarkCustomerFailed?.(cust.id, errMsg);
           } else {
             success++;
@@ -319,13 +331,15 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
           }
         } catch (e: any) {
           const errMsg = e?.message || "Network error";
-            failures.push({ name: cust.name, phone: cust.phone, error: errMsg });
+          failures.push({ name: cust.name, phone: cust.phone, error: errMsg });
           onMarkCustomerFailed?.(cust.id, errMsg);
         }
         await new Promise((r) => setTimeout(r, 150));
       }
       if (failures.length === 0)
-        setWaSendStatus(`All ${success} WhatsApp messages sent successfully via Meta.`);
+        setWaSendStatus(
+          `All ${success} WhatsApp messages sent successfully via Meta. (Note: 'success' = accepted by API, not guaranteed delivered. Use a template if user hasn't replied in 24h.)`
+        );
       else
         setWaSendStatus(
           `Sent ${success}/${total}. Failed: ${failures.length}. First error: ${failures[0].name} - ${failures[0].error}`
@@ -334,6 +348,149 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
       setWaSendStatus("Error sending WhatsApp (Meta): " + err.message);
     } finally {
       setWaSending(false);
+    }
+  };
+
+  const handleVerifyWaConfig = async () => {
+    setWaVerifyStatus("");
+    if (!waAccessToken || !waPhoneNumberId) {
+      setWaVerifyStatus("Enter Access Token and Phone Number ID first.");
+      return;
+    }
+    try {
+      const url = `${API_BASE}/wa-verify?accessToken=${encodeURIComponent(
+        waAccessToken
+      )}&phoneNumberId=${encodeURIComponent(waPhoneNumberId)}${waDebug ? "&debug=1" : ""}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (!resp.ok || !data.success) {
+        setWaVerifyStatus(
+          `Verify failed: ${data.error || resp.status}. ${data.hint || ""}`
+        );
+      } else {
+        setWaVerifyStatus(
+          `Verified: ${data.info?.display_phone_number || waPhoneNumberId} (${data.info?.verified_name || "unverified name"})`
+        );
+      }
+    } catch (e: any) {
+      setWaVerifyStatus(`Verify error: ${e.message}`);
+    }
+  };
+
+  const handleCheckWaContact = async () => {
+    setWaContactStatus("");
+    if (!waAccessToken || !waPhoneNumberId || selectedRecipients.length === 0) {
+      setWaContactStatus(
+        "Provide Access Token, Phone Number ID, and select at least one recipient."
+      );
+      return;
+    }
+    const cust = selectedRecipients[0];
+    try {
+      const resp = await fetch(`${API_BASE}/wa-check-contact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accessToken: waAccessToken,
+          phoneNumberId: waPhoneNumberId,
+          to: cust.phone,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.success) {
+        setWaContactStatus(
+          `Contact check failed: ${data.error || resp.status}. ${data.hint || ""}`
+        );
+      } else {
+        const c = data.result?.contacts?.[0];
+        if (c?.status === "valid") {
+          setWaContactStatus(
+            `WhatsApp contact valid (wa_id=${c.wa_id || "n/a"}).`
+          );
+        } else {
+          setWaContactStatus(
+            `Not valid / not opted-in. Status=${c?.status || "unknown"}`
+          );
+        }
+      }
+    } catch (e: any) {
+      setWaContactStatus(`Contact check error: ${e.message}`);
+    }
+  };
+
+  const handleSendWaTemplate = async () => {
+    setWaTemplateStatus("");
+    if (
+      !waAccessToken ||
+      !waPhoneNumberId ||
+      selectedRecipients.length === 0 ||
+      !waTemplateName ||
+      !waTemplateLang
+    ) {
+      setWaTemplateStatus(
+        "Enter token, phone number ID, select recipients, template name & language."
+      );
+      return;
+    }
+    try {
+      const total = selectedRecipients.length;
+      let success = 0;
+      const failures: { name: string; phone: string; error: string }[] = [];
+      for (let i = 0; i < selectedRecipients.length; i++) {
+        const cust = selectedRecipients[i];
+        setWaTemplateStatus(
+          `Sending template ${i + 1}/${total} → ${cust.name} (${cust.phone})...`
+        );
+        try {
+          const payload = {
+            accessToken: waAccessToken,
+            phoneNumberId: waPhoneNumberId,
+            to: cust.phone,
+            template: {
+              name: waTemplateName,
+              languageCode: waTemplateLang,
+            },
+            ...(waDebug ? { debug: true } : {}),
+          };
+            const resp = await fetch(`${API_BASE}/send-whatsapp-template`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || !data.success) {
+              const errMsg = data.error || resp.status;
+              failures.push({
+                name: cust.name,
+                phone: cust.phone,
+                error: String(errMsg),
+              });
+              onMarkCustomerFailed?.(cust.id, String(errMsg));
+            } else {
+              success++;
+              onMarkCustomerSent?.(cust.id, "wa-template");
+            }
+        } catch (e: any) {
+          failures.push({
+            name: cust.name,
+            phone: cust.phone,
+            error: e.message || "Error",
+          });
+          onMarkCustomerFailed?.(cust.id, e.message || "Error");
+        }
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      if (failures.length === 0) {
+        setWaTemplateStatus(
+          `All ${success} template messages accepted by API.`
+        );
+      } else {
+        setWaTemplateStatus(
+          `Sent ${success}/${total}. Failed: ${failures.length}. First error: ${failures[0].name} - ${failures[0].error}`
+        );
+      }
+    } catch (e: any) {
+      setWaTemplateStatus(`Template send error: ${e.message}`);
     }
   };
 
@@ -418,7 +575,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
               />
               <p className="mt-2 text-xs text-gray-500">
                 Legacy placeholders like [Customer Name] and [Business Name] are
-      npm run dev          also supported.
+                npm run dev also supported.
               </p>
             </div>
             <div className="bg-gray-50 border border-gray-200 rounded-md p-4">
@@ -442,8 +599,14 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
           <p className="text-sm text-gray-500 mb-4 space-y-1">
             <span className="block">Configure outgoing channels:</span>
             <span className="block">• SMS uses your Twilio credentials.</span>
-            <span className="block">• WhatsApp now uses Meta's Cloud API (no Twilio for WhatsApp).</span>
-            <span className="block text-xs text-orange-600">Note: Free-form WhatsApp text can only be sent within 24h of the user's last reply. For outside the 24h window you must use an approved template (add later).</span>
+            <span className="block">
+              • WhatsApp now uses Meta's Cloud API (no Twilio for WhatsApp).
+            </span>
+            <span className="block text-xs text-orange-600">
+              Note: Free-form WhatsApp text can only be sent within 24h of the
+              user's last reply. For outside the 24h window you must use an
+              approved template (add later).
+            </span>
           </p>
 
           <div className="space-y-4">
@@ -603,12 +766,25 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                     ? `Send ${selectedRecipients.length} WhatsApp`
                     : "Send WhatsApp"}
                 </button>
+                <button
+                  type="button"
+                  onClick={handleSendWaTemplate}
+                  className="px-4 py-2 rounded-md font-semibold mt-2 text-white bg-emerald-600 hover:bg-emerald-700"
+                  disabled={waSending}
+                >
+                  {selectedRecipients.length > 1
+                    ? `Send ${selectedRecipients.length} Template`
+                    : "Send Template"}
+                </button>
               </div>
               {smsSendStatus && (
                 <p className="text-sm text-gray-700">{smsSendStatus}</p>
               )}
               {waSendStatus && (
                 <p className="text-sm text-gray-700">{waSendStatus}</p>
+              )}
+              {waTemplateStatus && (
+                <p className="text-sm text-gray-700">{waTemplateStatus}</p>
               )}
             </div>
 
@@ -687,8 +863,67 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                 placeholder="123456789012345"
               />
               <p className="text-xs text-gray-500 mt-1">
-                Find this in Meta Business Manager &gt; WhatsApp &gt; Getting Started.
+                Find this in Meta Business Manager &gt; WhatsApp &gt; Getting
+                Started.
               </p>
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    Template Name (optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={waTemplateName}
+                    onChange={(e) => setWaTemplateName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                    placeholder="review_request"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    Template Language
+                  </label>
+                  <input
+                    type="text"
+                    value={waTemplateLang}
+                    onChange={(e) => setWaTemplateLang(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                    placeholder="en_US"
+                  />
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-3 items-center">
+                <button
+                  type="button"
+                  onClick={handleVerifyWaConfig}
+                  className="px-3 py-1.5 text-xs rounded bg-blue-50 text-blue-700 font-semibold hover:bg-blue-100 border border-blue-200"
+                >
+                  Verify Config
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCheckWaContact}
+                  className="px-3 py-1.5 text-xs rounded bg-indigo-50 text-indigo-700 font-semibold hover:bg-indigo-100 border border-indigo-200"
+                  disabled={selectedRecipients.length === 0}
+                >
+                  Check First Recipient
+                </button>
+                <label className="flex items-center gap-1 text-xs text-gray-600 select-none">
+                  <input
+                    type="checkbox"
+                    checked={waDebug}
+                    onChange={(e) => setWaDebug(e.target.checked)}
+                    className="rounded border-gray-300"
+                  />
+                  Debug
+                </label>
+              </div>
+              {waVerifyStatus && (
+                <p className="mt-2 text-xs text-gray-700">{waVerifyStatus}</p>
+              )}
+              {waContactStatus && (
+                <p className="mt-1 text-xs text-gray-700">{waContactStatus}</p>
+              )}
             </div>
           </div>
         </div>
