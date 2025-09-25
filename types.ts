@@ -29,6 +29,8 @@ export interface FeedbackEntry {
   sentiment: "positive" | "negative";
   date: Date;
   phone?: string;
+  // Optional 1-5 star rating (we only visualize 1-3 per current requirements)
+  rating?: number;
 }
 
 export enum Page {

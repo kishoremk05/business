@@ -3,10 +3,6 @@ import {
   PieChart,
   Pie,
   Cell,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
   Tooltip,
   Legend,
   ResponsiveContainer,
@@ -19,7 +15,6 @@ import {
   TrashIcon,
   UploadIcon,
   SearchIcon,
-  // EnvelopeIcon,
   CreditCardIcon,
   EllipsisVerticalIcon,
   ClickIcon,
@@ -29,6 +24,150 @@ import {
   XCircleIcon,
 } from "../components/icons";
 import AddCustomerModal from "../components/AddCustomerModal";
+
+// Dashboard Overview cards (top summary) – counts sent based on logs first, fallback to status.
+const DashboardOverview: React.FC<{
+  customers: Customer[];
+  activityLogs: ActivityLog[];
+}> = ({ customers, activityLogs }) => {
+  // Count sends from logs (preferred accurate source)
+  const sentLogCount = activityLogs.filter((log) => {
+    const a = log.action.toLowerCase();
+    return (
+      a.includes("sent sms") ||
+      a.includes("resend sms") ||
+      a.includes("sent review request")
+    );
+  }).length;
+  // Fallback to status derived
+  const statusDerivedSent = customers.filter(
+    (c) =>
+      c.status === "Sent" || c.status === "Clicked" || c.status === "Reviewed"
+  ).length;
+  const messagesSent = sentLogCount > 0 ? sentLogCount : statusDerivedSent;
+
+  const reviewRedirects = customers.filter(
+    (c) => c.status === "Clicked" || c.status === "Reviewed"
+  ).length;
+
+  const conversionRate =
+    messagesSent > 0 ? (reviewRedirects / messagesSent) * 100 : 0;
+
+  const Card = ({ value, label }: { value: string; label: string }) => (
+    <div className="flex flex-col items-center justify-center bg-gray-100 rounded-xl p-8 min-w-[220px] min-h-[120px]">
+      <div className="text-4xl font-extrabold text-blue-600 mb-2">{value}</div>
+      <div className="text-lg text-gray-700 font-medium text-center">
+        {label}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="mb-8">
+      <h2 className="text-2xl font-bold text-purple-700 mb-2">
+        Dashboard Overview
+      </h2>
+      <div className="h-1 w-full bg-gray-100 mb-6" />
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <Card value={messagesSent.toLocaleString()} label="Messages Sent" />
+        <Card
+          value={reviewRedirects.toLocaleString()}
+          label="Review Redirects"
+        />
+        <Card value={`${conversionRate.toFixed(1)}%`} label="Conversion Rate" />
+      </div>
+    </div>
+  );
+};
+// Card-style section for negative comments, styled like Plan Status
+const NegativeCommentsCard: React.FC<{
+  comments: Array<{
+    id: string;
+    customerName: string;
+    customerPhone: string;
+    date: Date;
+    text: string;
+  }>;
+}> = ({ comments }) => {
+  const count = comments.length;
+  const handleOpen = () => {
+    if (typeof (window as any).openFeedbackFromDashboard === "function") {
+      (window as any).openFeedbackFromDashboard("negative");
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={handleOpen}
+      className="text-left bg-white p-6 rounded-lg border border-red-200 h-full hover:shadow-md hover:border-red-300 transition"
+    >
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-lg font-semibold text-red-700 flex items-center gap-2">
+          <XCircleIcon className="h-5 w-5 text-red-500" />
+          Negative Comments
+        </h3>
+        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-800">
+          {count}
+        </span>
+      </div>
+      <div className="flex items-center justify-between text-sm text-gray-600">
+        <span>View all negative feedback</span>
+        <span aria-hidden>→</span>
+      </div>
+    </button>
+  );
+};
+// Props for NegativeFeedbackSection
+// Section to show only negative feedback comments
+type NegativeFeedbackSectionProps = { customers: Customer[] };
+const NegativeFeedbackSection: React.FC<NegativeFeedbackSectionProps> = ({
+  customers,
+}) => {
+  // Gather all negative feedback entries from all customers
+  const negativeFeedbacks = customers
+    .flatMap((c) =>
+      c.feedback
+        ? c.feedback.map((f) => ({
+            ...f,
+            customerName: c.name,
+            customerPhone: c.phone,
+          }))
+        : []
+    )
+    .filter((f) => f.sentiment === "negative");
+
+  if (negativeFeedbacks.length === 0) return null;
+
+  return (
+    <div className="bg-white p-6 rounded-lg border border-red-200 mt-2">
+      <h3 className="text-lg font-semibold text-red-700 mb-4 flex items-center gap-2">
+        <XCircleIcon className="h-5 w-5 text-red-500" />
+        Negative Feedback Comments
+      </h3>
+      <ul className="space-y-4">
+        {negativeFeedbacks.map((fb) => (
+          <li key={fb.id} className="border-b border-red-100 pb-4">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between">
+              <div>
+                <span className="font-semibold text-gray-900">
+                  {fb.customerName}
+                </span>
+                <span className="ml-2 text-xs text-gray-500">
+                  {fb.customerPhone}
+                </span>
+              </div>
+              <div className="text-xs text-gray-400 mt-1 md:mt-0">
+                {new Date(fb.date).toLocaleString()}
+              </div>
+            </div>
+            <div className="mt-2 text-gray-800">{fb.text}</div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+// (imports moved to top)
 
 declare var XLSX: any;
 
@@ -115,37 +254,23 @@ const FunnelAnalytics: React.FC<{ customers: Customer[] }> = ({
     );
   };
 
-  // Pie chart data for star ratings (fallback if empty)
-  const pieDataRaw = Object.entries(stats.ratingCounts).map(
-    ([rating, count]) => ({
-      name: `${rating} Star`,
-      value: count,
-    })
-  );
-  const pieData =
-    pieDataRaw.length > 0 ? pieDataRaw : [{ name: "No Ratings", value: 1 }];
-  const pieColors = [
-    "#FFD700",
-    "#C0C0C0",
-    "#CD7F32",
-    "#4CAF50",
-    "#2196F3",
-    "#E5E7EB",
-  ];
-
-  // Ratings sentiment graph: 5,4 are positive (up), 3,2,1 are negative (down)
-  const rc = (n: number) => stats.ratingCounts[n] || 0;
-  const sentimentDataRaw = [
-    { name: "5★", value: rc(5) },
-    { name: "4★", value: rc(4) },
-    { name: "3★", value: -rc(3) },
-    { name: "2★", value: -rc(2) },
-    { name: "1★", value: -rc(1) },
-  ];
-  const hasSentiment = sentimentDataRaw.some((d) => d.value !== 0);
-  const sentimentData = hasSentiment
-    ? sentimentDataRaw
-    : [{ name: "No Data", value: 0 }];
+  // Deterministic pie chart data for star ratings (only 1,2,3 – hide 4 & 5 per requirement)
+  const rawCounts = stats.ratingCounts;
+  const ordered = [1, 2, 3].map((r) => ({
+    rating: r,
+    value: rawCounts[r] || 0,
+  }));
+  const hasAnyRating = ordered.some((o) => o.value > 0);
+  const pieData = hasAnyRating
+    ? ordered.map((o) => ({
+        name: `${o.rating} Star${o.rating > 1 ? "s" : ""}`,
+        value: o.value,
+      }))
+    : [{ name: "No Ratings", value: 1 }];
+  // Color mapping: 1=red, 2=amber, 3=yellow (darker progression for severity)
+  const pieColors = hasAnyRating
+    ? ["#dc2626", "#f59e0b", "#fbbf24"]
+    : ["#E5E7EB"]; // neutral gray when empty
 
   // Donut chart data for feedback (fallback if empty)
   const donutDataRaw = [
@@ -163,7 +288,7 @@ const FunnelAnalytics: React.FC<{ customers: Customer[] }> = ({
       <h3 className="text-lg font-semibold text-gray-800 mb-4">
         Smart Funnel Analytics
       </h3>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Pie Chart: Total customers by star ratings */}
         <div>
           <h4 className="text-md font-semibold text-gray-700 mb-2">
@@ -191,39 +316,12 @@ const FunnelAnalytics: React.FC<{ customers: Customer[] }> = ({
               <Legend />
             </PieChart>
           </ResponsiveContainer>
-          {pieData.length === 1 && pieData[0].name === "No Ratings" && (
+          {(!hasAnyRating ||
+            (pieData.length === 1 && pieData[0].name === "No Ratings")) && (
             <div className="text-center text-gray-400 text-sm mt-2">
-              No ratings yet
+              No 1–3 star ratings yet
             </div>
           )}
-        </div>
-        {/* Ratings Sentiment Graph: Positive (high) vs Negative (low) */}
-        <div>
-          <h4 className="text-md font-semibold text-gray-700 mb-2">
-            Ratings Sentiment
-          </h4>
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={sentimentData}>
-              <XAxis dataKey="name" />
-              <YAxis allowDecimals={false} />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey="value">
-                {sentimentData.map((item, idx) => (
-                  <Cell
-                    key={`cell-sent-${idx}`}
-                    fill={item.value >= 0 ? "#22C55E" : "#EF4444"}
-                  />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-          {sentimentData.length === 1 &&
-            sentimentData[0].name === "No Data" && (
-              <div className="text-center text-gray-400 text-sm mt-2">
-                No feedback ratings yet
-              </div>
-            )}
         </div>
         {/* Donut Chart: Feedback summary */}
         <div>
@@ -414,6 +512,7 @@ interface CustomerTableProps {
     feedbackType: "positive" | "negative"
   ) => void;
   onAddFeedback?: (customerId: string, text: string) => void;
+  onClearCustomers: () => void;
 }
 
 const CustomerTable: React.FC<CustomerTableProps> = ({
@@ -424,9 +523,12 @@ const CustomerTable: React.FC<CustomerTableProps> = ({
   onOpenFunnel,
   onOpenFeedback,
   onAddFeedback,
+  onClearCustomers,
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 3;
   const menuRef = useRef<HTMLDivElement>(null);
 
   const filteredCustomers = customers.filter((customer) => {
@@ -440,6 +542,21 @@ const CustomerTable: React.FC<CustomerTableProps> = ({
 
     return nameMatch || phoneMatch;
   });
+
+  // Pagination logic
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filteredCustomers.length / pageSize)
+  );
+  const paginatedCustomers = filteredCustomers.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
+  );
+
+  // Reset to page 1 when search changes or customer list changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, customers]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -459,166 +576,159 @@ const CustomerTable: React.FC<CustomerTableProps> = ({
 
   return (
     <div className="bg-white p-6 rounded-lg border border-gray-200">
-      <div className="flex flex-col md:flex-row justify-between items-center mb-5 gap-4">
-        <h3 className="text-lg font-semibold text-gray-800">Customer List</h3>
-        <div className="relative w-full md:w-auto">
-          <span className="absolute inset-y-0 left-0 flex items-center pl-3">
-            <SearchIcon className="h-5 w-5 text-gray-400" />
-          </span>
-          <input
-            type="text"
-            placeholder="Search by name or phone..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full md:w-64 pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-primary-600 focus:border-primary-600 bg-white text-gray-900"
-          />
+      <div className="mb-4">
+        <h3 className="text-lg font-semibold text-gray-800 mb-2">
+          Customer List
+        </h3>
+        <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+          <div className="relative w-full md:w-auto flex items-center gap-2">
+            <span className="absolute inset-y-0 left-0 flex items-center pl-3">
+              <SearchIcon className="h-5 w-5 text-gray-400" />
+            </span>
+            <input
+              type="text"
+              placeholder="Search by name or phone..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full md:w-64 pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-primary-600 focus:border-primary-600 bg-white text-gray-900"
+            />
+            <button
+              className="ml-2 px-3 py-2 bg-red-600 text-white rounded hover:bg-red-700 font-semibold"
+              onClick={onClearCustomers}
+            >
+              Clear
+            </button>
+          </div>
         </div>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm text-left text-gray-500">
-          <thead className="text-xs text-gray-700 uppercase bg-gray-50">
-            <tr>
-              <th scope="col" className="px-6 py-3 font-medium">
-                Name
-              </th>
-              <th scope="col" className="px-6 py-3 font-medium">
-                Phone
-              </th>
-              <th
-                scope="col"
-                className="px-6 py-3 font-medium hidden md:table-cell"
-              >
-                Feedback
-              </th>
-              <th scope="col" className="px-6 py-3 text-right font-medium">
-                Actions
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredCustomers.map((customer) => (
-              <tr
-                key={customer.id}
-                className="bg-white border-b hover:bg-gray-50"
-              >
-                <td className="px-6 py-4 font-medium text-gray-900 whitespace-nowrap">
-                  {customer.name}
-                </td>
-                <td className="px-6 py-4">
-                  <div className="font-normal text-gray-700">
-                    {customer.phone}
-                  </div>
-                </td>
-                <td className="px-6 py-4 hidden md:table-cell">
-                  {/* Compute latest feedback sentiment for the customer */}
-                  {(() => {
-                    const fb = (customer.feedback || [])
-                      .slice()
-                      .sort((a, b) => b.date.getTime() - a.date.getTime())[0];
-                    if (!fb) {
-                      return (
-                        <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-gray-100 text-gray-800">
-                          No feedback
-                        </span>
-                      );
-                    }
-
-                    const isPositive = fb.sentiment === "positive";
-                    return (
-                      <button
-                        onClick={() =>
-                          onOpenFeedback(customer.id, fb.sentiment)
-                        }
-                        className={`px-2.5 py-0.5 text-xs font-semibold rounded-full inline-flex items-center ${
-                          isPositive
-                            ? "bg-green-100 text-green-800"
-                            : "bg-red-100 text-red-800"
-                        }`}
-                      >
-                        {isPositive ? "Positive" : "Negative"}
-                      </button>
-                    );
-                  })()}
-                </td>
-                <td className="px-6 py-4 text-right relative">
-                  <div className="flex items-center gap-2 justify-end">
-                    <button
-                      onClick={() => handleToggleMenu(customer.id)}
-                      className="p-2 rounded-full hover:bg-gray-100 text-gray-500"
-                      aria-haspopup="true"
-                      aria-expanded={openMenuId === customer.id}
-                    >
-                      <EllipsisVerticalIcon className="h-5 w-5" />
-                    </button>
-                  </div>
-                  {openMenuId === customer.id && (
-                    <div
-                      ref={menuRef}
-                      className="origin-top-right absolute right-0 mt-2 w-56 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-10 border border-gray-100"
-                      role="menu"
-                      aria-orientation="vertical"
-                      aria-labelledby="menu-button"
-                    >
-                      <div className="py-1" role="none">
+      {filteredCustomers.length === 0 ? (
+        <div className="py-10 text-center text-gray-500 text-base font-medium">
+          No customer data
+        </div>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left text-gray-500">
+              <thead className="text-xs text-gray-700 uppercase bg-gray-50">
+                <tr>
+                  <th scope="col" className="px-6 py-3 font-medium">
+                    Name
+                  </th>
+                  <th scope="col" className="px-6 py-3 font-medium">
+                    Phone
+                  </th>
+                  {/* Feedback column removed */}
+                  <th scope="col" className="px-6 py-3 text-right font-medium">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedCustomers.map((customer) => (
+                  <tr
+                    key={customer.id}
+                    className="bg-white border-b hover:bg-gray-50"
+                  >
+                    <td className="px-6 py-4 font-medium text-gray-900 whitespace-nowrap">
+                      {customer.name}
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="font-normal text-gray-700">
+                        {customer.phone}
+                      </div>
+                    </td>
+                    {/* Feedback cell removed */}
+                    <td className="px-6 py-4 text-right relative">
+                      <div className="flex items-center gap-2 justify-end">
                         <button
-                          onClick={() => {
-                            onSendMessage(customer.id);
-                            setOpenMenuId(null);
-                          }}
-                          disabled={customer.status === "Reviewed"}
-                          className="w-full text-left flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                          role="menuitem"
+                          onClick={() => handleToggleMenu(customer.id)}
+                          className="p-2 rounded-full hover:bg-gray-100 text-gray-500"
+                          aria-haspopup="true"
+                          aria-expanded={openMenuId === customer.id}
                         >
-                          <PaperAirplaneIcon className="h-4 w-4 mr-3" />
-                          {customer.status === "Pending"
-                            ? "Send SMS"
-                            : "Resend SMS"}
-                        </button>
-                        {/* Email option removed */}
-                        <div className="border-t my-1 border-gray-100"></div>
-                        <button
-                          onClick={() => {
-                            onOpenFeedback(customer.id, "positive");
-                            setOpenMenuId(null);
-                          }}
-                          className="w-full text-left flex items-center px-4 py-2 text-sm text-green-600 hover:bg-green-50"
-                          role="menuitem"
-                        >
-                          <StarIcon className="h-4 w-4 mr-3" />
-                          Positive Feedback
-                        </button>
-                        <button
-                          onClick={() => {
-                            onOpenFeedback(customer.id, "negative");
-                            setOpenMenuId(null);
-                          }}
-                          className="w-full text-left flex items-center px-4 py-2 text-sm text-red-600 hover:bg-red-50"
-                          role="menuitem"
-                        >
-                          <XCircleIcon className="h-4 w-4 mr-3" />
-                          Negative Feedback
-                        </button>
-                        <div className="border-t my-1 border-gray-100"></div>
-                        <button
-                          onClick={() => {
-                            onDeleteCustomer(customer.id);
-                            setOpenMenuId(null);
-                          }}
-                          className="w-full text-left flex items-center px-4 py-2 text-sm text-red-600 hover:bg-red-50"
-                          role="menuitem"
-                        >
-                          <TrashIcon className="h-4 w-4 mr-3" />
-                          Delete
+                          <EllipsisVerticalIcon className="h-5 w-5" />
                         </button>
                       </div>
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                      {openMenuId === customer.id && (
+                        <div
+                          ref={menuRef}
+                          className="origin-top-right absolute right-0 mt-2 w-44 rounded-xl shadow-2xl bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-10 border border-gray-100 flex flex-col py-2"
+                          role="menu"
+                          aria-orientation="vertical"
+                          aria-labelledby="menu-button"
+                        >
+                          <button
+                            onClick={() => {
+                              onSendMessage(customer.id);
+                              setOpenMenuId(null);
+                            }}
+                            disabled={customer.status === "Reviewed"}
+                            className="w-full text-left flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-primary-50 hover:text-primary-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition"
+                            role="menuitem"
+                          >
+                            <PaperAirplaneIcon className="h-4 w-4 mr-3" />
+                            {customer.status === "Pending"
+                              ? "Send SMS"
+                              : "Resend SMS"}
+                          </button>
+                          <div className="border-t my-2 border-gray-100"></div>
+                          <button
+                            onClick={() => {
+                              onDeleteCustomer(customer.id);
+                              setOpenMenuId(null);
+                            }}
+                            className="w-full text-left flex items-center px-4 py-2 text-sm text-red-600 hover:bg-red-50 rounded-lg transition"
+                            role="menuitem"
+                          >
+                            <TrashIcon className="h-4 w-4 mr-3" />
+                            Delete
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {/* Pagination controls */}
+          {totalPages > 1 && (
+            <div className="flex justify-center items-center mt-4 gap-2">
+              <button
+                className="px-3 py-1 rounded bg-gray-200 text-gray-700 font-semibold disabled:opacity-50"
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+              >
+                Prev
+              </button>
+              {Array.from({ length: totalPages }, (_, i) => i + 1).map(
+                (page) => (
+                  <button
+                    key={page}
+                    className={`px-3 py-1 rounded font-semibold ${
+                      page === currentPage
+                        ? "bg-primary-600 text-white"
+                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    }`}
+                    onClick={() => setCurrentPage(page)}
+                  >
+                    {page}
+                  </button>
+                )
+              )}
+              <button
+                className="px-3 py-1 rounded bg-gray-200 text-gray-700 font-semibold disabled:opacity-50"
+                onClick={() =>
+                  setCurrentPage((p) => Math.min(totalPages, p + 1))
+                }
+                disabled={currentPage === totalPages}
+              >
+                Next
+              </button>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 };
@@ -640,6 +750,7 @@ interface DashboardPageProps {
     feedbackType: "positive" | "negative"
   ) => void;
   onAddFeedback?: (customerId: string, text: string) => void;
+  onClearCustomers: () => void;
 }
 
 const DashboardPage: React.FC<DashboardPageProps> = ({
@@ -655,6 +766,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
   onOpenFunnel,
   onOpenFeedback,
   onAddFeedback,
+  onClearCustomers,
 }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -752,6 +864,9 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
 
   return (
     <div className="p-6 lg:p-10">
+      {/* Dashboard Overview Section */}
+      <DashboardOverview customers={customers} activityLogs={activityLogs} />
+
       <div className="flex flex-col md:flex-row justify-between items-start mb-8 gap-4">
         <div>
           <h2 className="text-3xl font-bold text-gray-800 tracking-tight">
@@ -769,6 +884,23 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
             accept=".xlsx"
             className="hidden"
           />
+          <a
+            href={`${(import.meta as any).env?.BASE_URL || "/"}feedback`}
+            onClick={(e) => {
+              e.preventDefault();
+              const base = (import.meta as any).env?.BASE_URL || "/";
+              const target = `${base}feedback`;
+              if (window.location.pathname !== target) {
+                window.history.pushState({ page: target }, "", target);
+                // Notify SPA listener in App.tsx
+                window.dispatchEvent(new PopStateEvent("popstate"));
+              }
+            }}
+            className="flex items-center bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-md font-semibold hover:bg-gray-100 transition-colors"
+          >
+            <StarIcon className="h-5 w-5 mr-2" />
+            Feedback Page
+          </a>
           <button
             onClick={triggerFileUpload}
             className="flex items-center bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-md font-semibold hover:bg-gray-100 transition-colors"
@@ -792,17 +924,42 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
         </div>
         <div className="lg:col-span-2">
           <CustomerTable
-            customers={customers}
+            customers={customers.filter((c) => {
+              if (c.id === "public-feedback") return false;
+              // Hide known sample/dummy data used in initial seeds
+              const dummyNames = new Set(["John Doe", "Jane Smith"]);
+              const dummyPhones = new Set(["+1234567890", "+1987654321"]);
+              if (dummyNames.has(c.name)) return false;
+              if (dummyPhones.has(c.phone)) return false;
+              return true;
+            })}
             onSendMessage={onSendMessage}
             onDeleteCustomer={onDeleteCustomer}
             onOpenFunnel={onOpenFunnel}
             onOpenFeedback={onOpenFeedback}
+            onClearCustomers={onClearCustomers}
           />
         </div>
         <div className="flex flex-col gap-8">
           <PlanStatus
             plan={plan}
             messagesSentThisMonth={messagesSentThisMonth}
+          />
+          {/* Negative Comments Card Section */}
+          <NegativeCommentsCard
+            comments={customers.flatMap((c) =>
+              c.feedback
+                ? c.feedback
+                    .filter((f) => f.sentiment === "negative")
+                    .map((f) => ({
+                      id: f.id,
+                      customerName: c.name,
+                      customerPhone: c.phone,
+                      date: f.date,
+                      text: f.text,
+                    }))
+                : []
+            )}
           />
         </div>
       </div>
@@ -816,5 +973,4 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
     </div>
   );
 };
-
 export default DashboardPage;

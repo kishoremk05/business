@@ -3,6 +3,11 @@ import { LinkIcon, ExclamationTriangleIcon } from "../components/icons";
 
 import { Customer } from "../types";
 
+// Central API base for server requests (overridable via Vite env)
+const API_BASE =
+  (import.meta as any).env?.VITE_SMS_API_BASE ||
+  "https://api-sms-server.onrender.com";
+
 interface SettingsPageProps {
   customers: Customer[];
   messageTemplate: string;
@@ -16,6 +21,8 @@ interface SettingsPageProps {
   setTwilioAuthToken: (token: string) => void;
   twilioPhoneNumber: string;
   setTwilioPhoneNumber: (phone: string) => void;
+  onMarkCustomerSent?: (customerId: string, context?: string) => void;
+  onMarkCustomerFailed?: (customerId: string, reason?: string) => void;
 }
 
 const SettingsPage: React.FC<SettingsPageProps> = ({
@@ -31,6 +38,8 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
   setTwilioAuthToken,
   twilioPhoneNumber,
   setTwilioPhoneNumber,
+  onMarkCustomerSent,
+  onMarkCustomerFailed,
 }) => {
   // Helper to personalize strings with placeholders used in both preview and send flows
   const personalize = (
@@ -59,8 +68,12 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
   const [localTwilioSid, setLocalTwilioSid] = useState(twilioAccountSid);
   const [localTwilioToken, setLocalTwilioToken] = useState(twilioAuthToken);
   const [localTwilioPhone, setLocalTwilioPhone] = useState(twilioPhoneNumber);
-  const [twilioWhatsAppFrom, setTwilioWhatsAppFrom] = useState<string>(
-    localStorage.getItem("twilioWhatsAppFrom") || ""
+  // Meta (WhatsApp Cloud API) credentials (kept local for now)
+  const [waAccessToken, setWaAccessToken] = useState(
+    localStorage.getItem("waAccessToken") || ""
+  );
+  const [waPhoneNumberId, setWaPhoneNumberId] = useState(
+    localStorage.getItem("waPhoneNumberId") || ""
   );
   const [showSuccess, setShowSuccess] = useState(false);
   // Multi-recipient selection
@@ -78,7 +91,10 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
     setTwilioAccountSid(localTwilioSid);
     setTwilioAuthToken(localTwilioToken);
     setTwilioPhoneNumber(localTwilioPhone);
-    localStorage.setItem("twilioWhatsAppFrom", twilioWhatsAppFrom);
+    // Persist Meta WA creds locally (not in props to keep scope limited)
+    if (waAccessToken) localStorage.setItem("waAccessToken", waAccessToken);
+    if (waPhoneNumberId)
+      localStorage.setItem("waPhoneNumberId", waPhoneNumberId);
     setShowSuccess(true);
     setTimeout(() => setShowSuccess(false), 3000);
   };
@@ -152,7 +168,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
     }
     try {
       setSmsSending(true);
-      const endpoint = "/send-sms";
+      const endpoint = `${API_BASE}/send-sms`;
       const total = selectedRecipients.length;
       let success = 0;
       const failures: {
@@ -182,18 +198,26 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
             body: JSON.stringify(payload),
           });
           let data: any = null;
+          let rawText = "";
           try {
             data = await res!.json();
           } catch {
+            try {
+              rawText = await res!.text();
+            } catch {}
+          }
+          if (!res.ok) {
+            const errMsg = data?.error || rawText || `HTTP ${res.status}`;
             failures.push({
               name: cust.name,
               phone: cust.phone,
-              error: "Non-JSON response",
+              error: errMsg,
+              code: data?.code,
             });
-            continue;
-          }
-          if (data.success) {
+            onMarkCustomerFailed?.(cust.id, errMsg);
+          } else if (data && data.success) {
             success++;
+            onMarkCustomerSent?.(cust.id, "settings");
           } else {
             const errMsg = data.hint
               ? `${data.error} — ${data.hint}`
@@ -204,6 +228,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
               error: errMsg,
               code: data.code,
             });
+            onMarkCustomerFailed?.(cust.id, errMsg);
           }
         } catch (err: any) {
           const rawMsg = err?.message || "Network error";
@@ -220,6 +245,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
             phone: cust.phone,
             error: guidance,
           });
+          onMarkCustomerFailed?.(cust.id, guidance);
         }
         await new Promise((r) => setTimeout(r, 150));
       }
@@ -244,31 +270,26 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
     }
   };
 
-  const handleSendWhatsapp = async () => {
+  // New: Send WhatsApp via Meta Cloud API (text only for now)
+  const handleSendMetaWhatsapp = async () => {
     setWaSendStatus("");
     if (
-      !localTwilioSid ||
-      !localTwilioToken ||
-      !twilioWhatsAppFrom ||
+      !waAccessToken ||
+      !waPhoneNumberId ||
       selectedRecipients.length === 0 ||
       !localSmsTemplate
     ) {
       setWaSendStatus(
-        "Please enter Twilio Account SID, Auth Token, Twilio WhatsApp From number, select recipients, and enter a message."
+        "Enter WhatsApp Access Token, Phone Number ID, select recipients, and enter a message."
       );
       return;
     }
     try {
       setWaSending(true);
-      const endpoint = "/send-twilio-whatsapp";
+      const endpoint = `${API_BASE}/send-whatsapp`;
       const total = selectedRecipients.length;
       let success = 0;
-      const failures: {
-        name: string;
-        phone: string;
-        error: string;
-        code?: any;
-      }[] = [];
+      const failures: { name: string; phone: string; error: string }[] = [];
       for (let i = 0; i < selectedRecipients.length; i++) {
         const cust = selectedRecipients[i];
         const personalized = buildPersonalizedMessage(cust);
@@ -277,9 +298,8 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
         );
         try {
           const payload = {
-            accountSid: localTwilioSid,
-            authToken: localTwilioToken,
-            fromWa: twilioWhatsAppFrom,
+            accessToken: waAccessToken,
+            phoneNumberId: waPhoneNumberId,
             to: cust.phone,
             body: personalized,
           };
@@ -288,55 +308,30 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           });
-          let data: any = null;
-          try {
-            data = await res.json();
-          } catch {
-            failures.push({
-              name: cust.name,
-              phone: cust.phone,
-              error: "Non-JSON response",
-            });
-            continue;
-          }
-          if (data.success) success++;
-          else {
-            const errMsg = data.hint
-              ? `${data.error} — ${data.hint}`
-              : data.error || "Unknown error";
-            failures.push({
-              name: cust.name,
-              phone: cust.phone,
-              error: errMsg,
-              code: data.code,
-            });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.success) {
+            const errMsg = data?.error || `HTTP ${res.status}`;
+            failures.push({ name: cust.name, phone: cust.phone, error: errMsg });
+            onMarkCustomerFailed?.(cust.id, errMsg);
+          } else {
+            success++;
+            onMarkCustomerSent?.(cust.id, "wa-meta");
           }
         } catch (e: any) {
-          const rawMsg = e?.message || "Network error";
-          let guidance = rawMsg;
-          if (
-            rawMsg.includes("Failed to fetch") ||
-            rawMsg === "Network error"
-          ) {
-            guidance =
-              "Failed to reach WhatsApp API. Check: (1) Server running and reachable at /send-twilio-whatsapp, (2) Vite dev proxy configured to backend, (3) Correct port (default 3002), (4) No firewall/ad-block.";
-          }
-          failures.push({
-            name: cust.name,
-            phone: cust.phone,
-            error: guidance,
-          });
+          const errMsg = e?.message || "Network error";
+            failures.push({ name: cust.name, phone: cust.phone, error: errMsg });
+          onMarkCustomerFailed?.(cust.id, errMsg);
         }
         await new Promise((r) => setTimeout(r, 150));
       }
       if (failures.length === 0)
-        setWaSendStatus(`All ${success} WhatsApp messages sent successfully.`);
+        setWaSendStatus(`All ${success} WhatsApp messages sent successfully via Meta.`);
       else
         setWaSendStatus(
           `Sent ${success}/${total}. Failed: ${failures.length}. First error: ${failures[0].name} - ${failures[0].error}`
         );
     } catch (err: any) {
-      setWaSendStatus("Error sending WhatsApp: " + err.message);
+      setWaSendStatus("Error sending WhatsApp (Meta): " + err.message);
     } finally {
       setWaSending(false);
     }
@@ -423,7 +418,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
               />
               <p className="mt-2 text-xs text-gray-500">
                 Legacy placeholders like [Customer Name] and [Business Name] are
-                also supported.
+      npm run dev          also supported.
               </p>
             </div>
             <div className="bg-gray-50 border border-gray-200 rounded-md p-4">
@@ -442,35 +437,44 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
       <div className="bg-white p-8 rounded-lg border border-gray-200 mb-8">
         <div className="max-w-2xl">
           <h3 className="text-xl font-semibold text-gray-800 mb-2">
-            Messaging Configuration (SMS & WhatsApp via Twilio)
+            Messaging Configuration (SMS via Twilio & WhatsApp via Meta)
           </h3>
-          <p className="text-sm text-gray-500 mb-4">
-            Enter your Twilio credentials for both SMS and WhatsApp messages.
+          <p className="text-sm text-gray-500 mb-4 space-y-1">
+            <span className="block">Configure outgoing channels:</span>
+            <span className="block">• SMS uses your Twilio credentials.</span>
+            <span className="block">• WhatsApp now uses Meta's Cloud API (no Twilio for WhatsApp).</span>
+            <span className="block text-xs text-orange-600">Note: Free-form WhatsApp text can only be sent within 24h of the user's last reply. For outside the 24h window you must use an approved template (add later).</span>
           </p>
-
-          <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded-r-lg mb-6">
-            <div className="flex">
-              <div className="flex-shrink-0">
-                <ExclamationTriangleIcon className="h-5 w-5 text-yellow-500" />
-              </div>
-              <div className="ml-3">
-                <p className="text-sm text-yellow-800 font-semibold">
-                  Security Warning
-                </p>
-                <p className="text-sm text-yellow-700 mt-1">
-                  Storing API keys on the frontend is insecure. This is for
-                  demonstration only. In a real application, all API calls
-                  should be made from a secure backend server.
-                </p>
-              </div>
-            </div>
-          </div>
 
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Recipients
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700">
+                  Recipients
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className="text-xs px-3 py-1 rounded bg-primary-50 text-primary-700 font-semibold hover:bg-primary-100 border border-primary-200"
+                    onClick={() => {
+                      setSelectedRecipients(customers);
+                      setShowRecipientSearch(false);
+                    }}
+                    disabled={selectedRecipients.length === customers.length}
+                  >
+                    Select All
+                  </button>
+                  {selectedRecipients.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedRecipients([])}
+                      className="text-xs px-3 py-1 rounded bg-red-50 text-red-700 font-semibold hover:bg-red-100 border border-red-200"
+                    >
+                      Clear All
+                    </button>
+                  )}
+                </div>
+              </div>
               <div className="flex flex-wrap gap-2 mb-3">
                 {selectedRecipients.map((r) => (
                   <span
@@ -562,15 +566,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                     ? "Select recipients"
                     : "Add more recipients"}
                 </button>
-                {selectedRecipients.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedRecipients([])}
-                    className="text-xs text-red-600 hover:underline"
-                  >
-                    Clear all
-                  </button>
-                )}
               </div>
             </div>
 
@@ -595,7 +590,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                 <button
                   type="button"
                   disabled={waSending}
-                  onClick={handleSendWhatsapp}
+                  onClick={handleSendMetaWhatsapp}
                   className={`px-4 py-2 rounded-md font-semibold mt-2 text-white ${
                     waSending
                       ? "bg-gray-400 cursor-not-allowed"
@@ -666,24 +661,33 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
                 placeholder="+15551234567"
               />
             </div>
-            <div>
-              <label
-                htmlFor="twilio-wa-from"
-                className="block text-sm font-medium text-gray-700 mb-1"
-              >
-                Twilio WhatsApp From (E.164)
+            {/* Meta WhatsApp Credentials */}
+            <div className="pt-4 border-t border-gray-200">
+              <h4 className="text-sm font-semibold text-gray-800 mb-2">
+                WhatsApp (Meta Cloud API)
+              </h4>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Access Token
               </label>
               <input
-                id="twilio-wa-from"
-                type="tel"
-                value={twilioWhatsAppFrom}
-                onChange={(e) => setTwilioWhatsAppFrom(e.target.value)}
+                type="password"
+                value={waAccessToken}
+                onChange={(e) => setWaAccessToken(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-primary-600 focus:border-primary-600 bg-white text-gray-900 mb-3"
+                placeholder="EAAG... (System User token)"
+              />
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Phone Number ID
+              </label>
+              <input
+                type="text"
+                value={waPhoneNumberId}
+                onChange={(e) => setWaPhoneNumberId(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-primary-600 focus:border-primary-600 bg-white text-gray-900"
-                placeholder="+14155238886"
+                placeholder="123456789012345"
               />
               <p className="text-xs text-gray-500 mt-1">
-                Use a Twilio WhatsApp-enabled sender; the server will prefix{" "}
-                <code>whatsapp:</code> automatically.
+                Find this in Meta Business Manager &gt; WhatsApp &gt; Getting Started.
               </p>
             </div>
           </div>

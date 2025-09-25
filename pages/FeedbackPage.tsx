@@ -9,7 +9,8 @@ interface FeedbackPageProps {
     customerId: string,
     text: string,
     sentiment: "positive" | "negative",
-    phone?: string
+    phone?: string,
+    rating?: number
   ) => void;
   googleReviewLink: string;
   addCustomer?: (name: string, phone: string) => string | void; // optional for auto-create
@@ -31,11 +32,135 @@ const FeedbackPage: React.FC<FeedbackPageProps> = ({
   const [rating, setRating] = useState<number | null>(null); // 1-5 stars
   const [negReasons, setNegReasons] = useState<string[]>([]);
   const [comment, setComment] = useState("");
+  // New state for negative feedback name/email
+  const [negName, setNegName] = useState("");
+  const [negEmail, setNegEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
 
-  // Feedback storage/display removed per requirement
-  const entries: any[] = [];
-  const filtered: any[] = [];
+  // Build entries for admin view when a sentiment filter is active
+  type Entry = {
+    id: string;
+    text: string;
+    sentiment: "positive" | "negative";
+    date: Date | string;
+    phone?: string;
+    name: string;
+    customerId: string;
+  };
+
+  const entries: Entry[] = useMemo(() => {
+    return customers.flatMap((c) =>
+      (c.feedback || []).map((f) => ({
+        id: f.id,
+        text: f.text,
+        sentiment: f.sentiment,
+        date: f.date,
+        phone: c.phone,
+        name: c.name,
+        customerId: c.id,
+      }))
+    );
+  }, [customers]);
+
+  const filtered = useMemo(() => {
+    if (!feedbackType) return entries;
+    return entries.filter((e) => e.sentiment === feedbackType);
+  }, [entries, feedbackType]);
+
+  // Admin view filters and pagination
+  const [searchQuery, setSearchQuery] = useState("");
+  const [startDate, setStartDate] = useState<string>("");
+  const [endDate, setEndDate] = useState<string>("");
+  const [sortOrder, setSortOrder] = useState<"newest" | "oldest" | "name">(
+    "newest"
+  );
+  const [page, setPage] = useState(1);
+  const pageSize = 9;
+
+  // CSV export for filtered results (not paged)
+  const exportCsv = () => {
+    const rows = filteredWithControls.map((e) => ({
+      Name: e.name,
+      Phone: e.phone || "",
+      Date: new Date(e.date).toLocaleString(),
+      Sentiment: e.sentiment,
+      Text: e.text,
+    }));
+    const headers = Object.keys(
+      rows[0] || {
+        Name: "",
+        Phone: "",
+        Date: "",
+        Sentiment: "",
+        Text: "",
+      }
+    );
+    const esc = (v: any) => {
+      const s = String(v ?? "");
+      if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+    const csv = [headers.join(",")]
+      .concat(rows.map((r) => headers.map((h) => esc((r as any)[h])).join(",")))
+      .join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `negative-feedback-${new Date()
+      .toISOString()
+      .slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Details modal state
+  const [selected, setSelected] = useState<Entry | null>(null);
+
+  const filteredWithControls = useMemo(() => {
+    const s = searchQuery.trim().toLowerCase();
+    const start = startDate ? new Date(startDate + "T00:00:00") : null;
+    const end = endDate ? new Date(endDate + "T23:59:59") : null;
+
+    let list = filtered.filter((e) => {
+      const inSearch = !s
+        ? true
+        : e.name.toLowerCase().includes(s) ||
+          (e.phone || "").toLowerCase().includes(s) ||
+          e.text.toLowerCase().includes(s);
+      if (!inSearch) return false;
+      const d = new Date(e.date);
+      if (start && d < start) return false;
+      if (end && d > end) return false;
+      return true;
+    });
+
+    list = list.slice().sort((a, b) => {
+      if (sortOrder === "name") {
+        return a.name.localeCompare(b.name);
+      }
+      const ad = +new Date(a.date);
+      const bd = +new Date(b.date);
+      return sortOrder === "newest" ? bd - ad : ad - bd;
+    });
+    return list;
+  }, [filtered, searchQuery, startDate, endDate, sortOrder]);
+
+  const totalCount = filtered.length;
+  const filteredCount = filteredWithControls.length;
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filteredWithControls.length / pageSize)
+  );
+  const paged = filteredWithControls.slice(
+    (page - 1) * pageSize,
+    page * pageSize
+  );
+
+  // Reset to page 1 when filters change
+  React.useEffect(() => {
+    setPage(1);
+  }, [searchQuery, startDate, endDate, sortOrder]);
 
   // Derived sentiment computed on submit
   const [quickSentiment, setQuickSentiment] = useState<"positive" | "negative">(
@@ -53,7 +178,7 @@ const FeedbackPage: React.FC<FeedbackPageProps> = ({
     const sentiment: "positive" | "negative" =
       rating >= 4 ? "positive" : "negative";
     setQuickSentiment(sentiment);
-    // If negative, verify reasons and required comment
+    // If negative, verify reasons, required comment, name, and email
     if (sentiment === "negative") {
       if (negReasons.length === 0) {
         setQuickStatus("Please select at least one reason.");
@@ -63,11 +188,35 @@ const FeedbackPage: React.FC<FeedbackPageProps> = ({
         setQuickStatus("Please share a few details to help us improve.");
         return;
       }
+      if (!negName.trim()) {
+        setQuickStatus("Please enter your name.");
+        return;
+      }
+      if (!negEmail.trim()) {
+        setQuickStatus("Please enter your email.");
+        return;
+      }
+      // Optionally, add basic email format validation
+      if (!/^\S+@\S+\.\S+$/.test(negEmail.trim())) {
+        setQuickStatus("Please enter a valid email address.");
+        return;
+      }
+      // Persist the negative feedback so it shows on Dashboard
+      const composed = `Name: ${negName}\nEmail: ${negEmail}\nReasons: ${negReasons.join(
+        ", "
+      )}\nComment: ${comment.trim()}`;
+      // If a specific customer context exists, use it; otherwise pass empty id and rely on phone match or bucket
+      const targetCustomerId = customer?.id || "";
+      const phone = customer?.phone || undefined;
+  addFeedback(targetCustomerId, composed, "negative", phone, rating || undefined);
+
       setSubmitted(true);
       setQuickStatus(null);
       // Clear selections after showing thank-you
       setNegReasons([]);
       setComment("");
+      setNegName("");
+      setNegEmail("");
       return;
     }
 
@@ -75,6 +224,16 @@ const FeedbackPage: React.FC<FeedbackPageProps> = ({
     if (googleReviewLink) {
       window.open(googleReviewLink, "_blank");
     }
+    // Persist positive rating internally (even if we don't display 4-5) for potential future use
+    const targetCustomerId = customer?.id || "";
+    const phone = customer?.phone || undefined;
+    addFeedback(
+      targetCustomerId,
+      `Public positive rating: ${rating} star${rating && rating > 1 ? "s" : ""}`,
+      "positive",
+      phone,
+      rating || undefined
+    );
     setQuickStatus(null);
   };
 
@@ -171,6 +330,37 @@ const FeedbackPage: React.FC<FeedbackPageProps> = ({
                       understand what went wrong so we can improve.
                     </p>
                   </div>
+                  {/* Name and Email fields */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <label className="text-sm font-semibold text-red-900 mb-2 flex items-center">
+                        <span className="w-2 h-2 bg-red-500 rounded-full mr-2"></span>
+                        Name <span className="text-red-600 ml-1">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={negName}
+                        onChange={(e) => setNegName(e.target.value)}
+                        className="w-full border-2 border-red-200 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 bg-white/90 placeholder-red-400"
+                        placeholder="Your name"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm font-semibold text-red-900 mb-2 flex items-center">
+                        <span className="w-2 h-2 bg-red-500 rounded-full mr-2"></span>
+                        Email <span className="text-red-600 ml-1">*</span>
+                      </label>
+                      <input
+                        type="email"
+                        value={negEmail}
+                        onChange={(e) => setNegEmail(e.target.value)}
+                        className="w-full border-2 border-red-200 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 bg-white/90 placeholder-red-400"
+                        placeholder="you@email.com"
+                        required
+                      />
+                    </div>
+                  </div>
 
                   <div className="space-y-6">
                     <div>
@@ -213,7 +403,7 @@ const FeedbackPage: React.FC<FeedbackPageProps> = ({
                     </div>
 
                     <div>
-                      <label className="block text-sm font-semibold text-red-900 mb-2 flex items-center">
+                      <label className="text-sm font-semibold text-red-900 mb-2 flex items-center">
                         <span className="w-2 h-2 bg-red-500 rounded-full mr-2"></span>
                         Tell us more about your experience{" "}
                         <span className="text-red-600 ml-1">*</span>
@@ -312,78 +502,210 @@ const FeedbackPage: React.FC<FeedbackPageProps> = ({
                 : "Negative Reviews"}
             </h2>
           </div>
-          <p className="text-sm text-gray-600 mt-1">
-            Showing {filtered.length} {feedbackType} review(s).
-          </p>
+          <div className="mt-1 flex items-center gap-3">
+            <p className="text-sm text-gray-600">
+              Showing {filteredCount} of {totalCount} {feedbackType} review(s).
+            </p>
+            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-800">
+              {feedbackType === "negative" ? "Negative" : "Positive"}
+            </span>
+          </div>
         </div>
       </div>
-      {filtered.length === 0 ? (
+      {/* Controls */}
+      <div className="mb-5 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 bg-white border border-gray-200 rounded-lg p-3">
+        <div className="col-span-1">
+          <input
+            type="text"
+            className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900"
+            placeholder="Search name, phone, or text..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="date"
+            className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+          />
+          <span className="text-gray-500">to</span>
+          <input
+            type="date"
+            className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900"
+            value={endDate}
+            onChange={(e) => setEndDate(e.target.value)}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-gray-600">Sort</label>
+          <select
+            className="flex-1 px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900"
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value as any)}
+          >
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="name">Name A–Z</option>
+          </select>
+        </div>
+        <div className="flex items-center justify-end gap-2 col-span-1 lg:col-span-2">
+          <button
+            type="button"
+            onClick={() => {
+              setSearchQuery("");
+              setStartDate("");
+              setEndDate("");
+              setSortOrder("newest");
+            }}
+            className="px-4 py-2 border border-gray-300 rounded-md bg-white text-gray-700 hover:bg-gray-50"
+          >
+            Clear filters
+          </button>
+          <button
+            type="button"
+            onClick={exportCsv}
+            className="px-4 py-2 rounded-md bg-primary-600 text-white font-semibold hover:bg-primary-700"
+          >
+            Export CSV
+          </button>
+        </div>
+      </div>
+      {filteredCount === 0 ? (
         <p className="text-gray-600">No reviews found.</p>
       ) : (
-        <ul className="space-y-4">
-          {filtered.map((r) => (
-            <li
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {paged.map((r) => (
+            <div
               key={r.id}
-              className={`p-4 rounded-lg border ${
-                customer && customer.id === r.customerId
-                  ? "border-primary-600 bg-primary-50"
-                  : "border-gray-200 bg-white"
-              }`}
+              className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm hover:shadow-md transition"
             >
-              <div className="flex items-center justify-between">
+              <div className="flex items-start justify-between">
                 <div>
                   <div className="font-semibold text-gray-900">{r.name}</div>
-                  <div className="text-sm text-gray-600 mt-1">{r.text}</div>
-                  <div className="text-xs text-gray-500 mt-1">{r.phone}</div>
-                  <div className="text-xs text-gray-400 mt-1">
-                    {new Date(r.date).toLocaleString()}
-                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5">{r.phone}</div>
                 </div>
-                <div>
-                  <span
-                    className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                      r.sentiment === "positive"
-                        ? "bg-green-100 text-green-800"
-                        : "bg-red-100 text-red-800"
-                    }`}
-                  >
-                    {r.sentiment}
-                  </span>
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                    r.sentiment === "positive"
+                      ? "bg-green-100 text-green-800"
+                      : "bg-red-100 text-red-800"
+                  }`}
+                >
+                  {r.sentiment}
+                </span>
+              </div>
+              <div className="text-xs text-gray-400 mt-2">
+                {new Date(r.date).toLocaleString()}
+              </div>
+              <div className="mt-3 text-gray-800 whitespace-pre-line">
+                {r.text && r.text.length > 180
+                  ? r.text.slice(0, 180) + "…"
+                  : r.text}
+              </div>
+              <div className="mt-3 flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={() => setSelected(r)}
+                  className="px-3 py-1.5 rounded-md text-sm font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200"
+                >
+                  Show details
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="mt-6 flex items-center justify-center gap-2">
+          <button
+            className="px-3 py-1 rounded bg-gray-200 text-gray-700 font-semibold disabled:opacity-50"
+            disabled={page === 1}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+          >
+            Prev
+          </button>
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map((n) => (
+            <button
+              key={n}
+              className={`px-3 py-1 rounded font-semibold ${
+                n === page
+                  ? "bg-primary-600 text-white"
+                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+              }`}
+              onClick={() => setPage(n)}
+            >
+              {n}
+            </button>
+          ))}
+          <button
+            className="px-3 py-1 rounded bg-gray-200 text-gray-700 font-semibold disabled:opacity-50"
+            disabled={page === totalPages}
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+          >
+            Next
+          </button>
+        </div>
+      )}
+
+      {/* Details Modal */}
+      {selected && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setSelected(null)}
+          ></div>
+          <div className="relative z-10 w-full max-w-2xl mx-4 bg-white rounded-xl shadow-lg border border-gray-200">
+            <div className="flex items-center justify-between px-5 py-4 border-b">
+              <div>
+                <div className="text-lg font-semibold text-gray-900">
+                  {selected.name}
+                </div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  {selected.phone}
                 </div>
               </div>
-            </li>
-          ))}
-        </ul>
-      )}
-      {customer && feedbackType && (
-        <div className="mt-6 bg-white p-4 rounded-lg border border-gray-200">
-          <h3 className="font-semibold">Add feedback for {customer.name}</h3>
-          <textarea
-            rows={3}
-            value={newFeedbackText}
-            onChange={(e) => setNewFeedbackText(e.target.value)}
-            placeholder={`Write a ${feedbackType} feedback...`}
-            className="w-full mt-2 p-2 border border-gray-300 rounded-md"
-          />
-          <div className="mt-3 flex items-center space-x-2">
-            <button
-              onClick={() => handleSubmit(customer.id)}
-              className={`px-4 py-2 rounded-md text-white font-semibold ${
-                feedbackType === "positive" ? "bg-green-600" : "bg-red-600"
-              }`}
-            >
-              Submit {feedbackType} Feedback
-            </button>
-            {feedbackType === "positive" && googleReviewLink && (
-              <a
-                href={googleReviewLink}
-                target="_blank"
-                rel="noreferrer"
-                className="ml-2 text-sm text-primary-600 underline"
+              <button
+                type="button"
+                className="p-2 rounded-md hover:bg-gray-100"
+                onClick={() => setSelected(null)}
+                aria-label="Close"
               >
-                Share on Google Reviews
-              </a>
-            )}
+                ✕
+              </button>
+            </div>
+            <div className="px-5 py-4">
+              <div className="flex items-center justify-between text-xs text-gray-500">
+                <span>{new Date(selected.date).toLocaleString()}</span>
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                    selected.sentiment === "positive"
+                      ? "bg-green-100 text-green-800"
+                      : "bg-red-100 text-red-800"
+                  }`}
+                >
+                  {selected.sentiment}
+                </span>
+              </div>
+              <div className="mt-3 p-3 bg-gray-50 rounded-lg border border-gray-200 max-h-80 overflow-auto whitespace-pre-line text-gray-800">
+                {selected.text}
+              </div>
+            </div>
+            <div className="px-5 py-3 border-t flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="px-4 py-2 rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
+                onClick={() => setSelected(null)}
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

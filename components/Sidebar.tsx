@@ -21,7 +21,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentPage, setCurrentPage }) => {
         <div className="bg-primary-600 p-2 rounded-lg">
           <BriefcaseIcon className="h-6 w-6 text-white" />
         </div>
-        <h1 className="text-xl font-bold text-gray-800 ml-3">BizReview</h1>
+        <h1 className="text-xl font-bold text-gray-800 ml-3 ">Reputation <br /><span className="text-primary-600">flow</span></h1>
       </div>
       <nav className="flex-1 px-4 py-6">
         <ul>

@@ -8,50 +8,65 @@ import FeedbackPage from "./pages/FeedbackPage";
 import QuickFeedbackPage from "./pages/QuickFeedbackPage";
 // import { EnvelopeIcon } from "./components/icons";
 
-// Mock Data
-const initialCustomers: Customer[] = [
-  {
-    id: "cust-1",
-    name: "John Doe",
-    phone: "+1234567890",
-    // email removed
-    status: CustomerStatus.Reviewed,
-    addedAt: new Date(2023, 10, 1),
-    rating: 5,
-    feedback: [],
-  },
-  {
-    id: "cust-2",
-    name: "Jane Smith",
-    phone: "+1987654321",
-    // email removed
-    status: CustomerStatus.Clicked,
-    addedAt: new Date(2023, 10, 2),
-    feedback: [],
-  },
-  // ...add other customers as needed...
-];
+// Add an API base that points to deployed server, overridable via Vite env
+const API_BASE =
+  (import.meta as any).env?.VITE_SMS_API_BASE ||
+  "https://api-sms-server.onrender.com";
+
+// Respect Vite base path (works in dev and GitHub Pages)
+const BASE_URL: string = (import.meta as any).env?.BASE_URL || "/";
+const joinBase = (slug: string) => {
+  const b = BASE_URL.endsWith("/") ? BASE_URL : BASE_URL + "/";
+  const s = slug.startsWith("/") ? slug.slice(1) : slug;
+  return b + s;
+};
+const stripBase = (p: string) => {
+  const b = (BASE_URL || "/").toLowerCase();
+  const lower = (p || "/").toLowerCase();
+  if (b !== "/" && lower.startsWith(b)) {
+    const rest = p.slice(BASE_URL.length);
+    return "/" + rest.replace(/^\/+/, "");
+  }
+  return p || "/";
+};
+
+// Initial customers: start empty (no dummy data)
+const initialCustomers: Customer[] = [];
 
 const App: React.FC = () => {
   // Add all your state and logic here
-  const path = window.location.pathname.toLowerCase();
+  // Handler to clear all customers
+  const handleClearCustomers = () => {
+    setCustomers([]);
+    localStorage.removeItem("customers");
+  };
+  const pathRaw = stripBase(window.location.pathname).toLowerCase();
   const initialPage: Page =
-    path === "/messenger" || path === "/settings" // accept old /settings for backward compatibility
+    pathRaw === "/messenger" || pathRaw === "/settings" // accept old /settings for backward compatibility
       ? Page.Settings
-      : path === "/feedback" || path === "/feeback"
+      : pathRaw === "/feedback" || pathRaw === "/feeback"
       ? Page.Feedback
-      : path === "/quick-feedback" || path === "/feeback"
+      : pathRaw === "/quick-feedback" || pathRaw === "/feeback"
       ? Page.QuickFeedback
       : Page.Dashboard;
   const [currentPage, setCurrentPage] = useState<Page>(initialPage);
   // Load customers from localStorage if available to preserve state across hard reloads
   const [customers, setCustomers] = useState<Customer[]>(() => {
+    const isSampleCustomer = (c: Customer) => {
+      const byId = c.id === "cust-1" || c.id === "cust-2";
+      const byKnownPair =
+        (c.name === "John Doe" && c.phone === "+1234567890") ||
+        (c.name === "Jane Smith" && c.phone === "+1987654321");
+      return byId || byKnownPair;
+    };
+    const stripSamples = (arr: Customer[]) =>
+      arr.filter((c) => !isSampleCustomer(c));
     try {
       const stored = localStorage.getItem("customers");
       if (stored) {
         const parsed: any[] = JSON.parse(stored);
         // Rehydrate date objects & fallback if structure changed
-        return parsed.map((c) => ({
+        const hydrated = parsed.map((c) => ({
           ...c,
           addedAt: c.addedAt ? new Date(c.addedAt) : new Date(),
           feedback: (c.feedback || []).map((f: any) => ({
@@ -59,11 +74,14 @@ const App: React.FC = () => {
             date: f.date ? new Date(f.date) : new Date(),
           })),
         })) as Customer[];
+        // One-time migration: remove any known sample customers
+        return stripSamples(hydrated);
       }
     } catch (e) {
       console.warn("Failed to parse customers from storage", e);
     }
-    return initialCustomers;
+    // Default to empty list
+    return stripSamples(initialCustomers);
   });
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
   const [selectedFeedbackCustomer, setSelectedFeedbackCustomer] =
@@ -77,7 +95,7 @@ const App: React.FC = () => {
     "Hey [Customer Name], we'd love to hear your feedback about [Business Name]. Please leave a review at [Review Link]."
   );
   // Email subject/content removed per requirement
-  const [businessName] = useState<string>("Acme Inc.");
+  const [businessName, setBusinessName] = useState<string>("Acme Inc.");
   const [googleReviewLink, setGoogleReviewLink] = useState<string>(
     "https://g.page/r/your-business-id/review"
   );
@@ -117,7 +135,7 @@ const App: React.FC = () => {
     }
     const body = formatTemplate(messageTemplate, customer.name, customer.phone);
     try {
-      const res = await fetch("/send-sms", {
+      const res = await fetch(`${API_BASE}/send-sms`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -241,6 +259,35 @@ const App: React.FC = () => {
     setActivityLogs((prev) => [newLog, ...prev]);
   };
 
+  // Exposed helpers for SettingsPage direct send path
+  const markCustomerSent = (customerId: string, context?: string) => {
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === customerId ? { ...c, status: CustomerStatus.Sent } : c
+      )
+    );
+    const cust = customers.find((c) => c.id === customerId);
+    if (cust)
+      logActivity(`Sent SMS${context ? ` (${context})` : ""}`, cust.name);
+  };
+  const markCustomerFailed = (customerId: string, reason?: string) => {
+    setCustomers((prev) =>
+      prev.map((c) =>
+        c.id === customerId ? { ...c, status: CustomerStatus.Failed } : c
+      )
+    );
+    const cust = customers.find((c) => c.id === customerId);
+    if (cust)
+      logActivity(
+        `SMS failed${
+          reason
+            ? ` (${reason.slice(0, 40)}` + (reason.length > 40 ? "…" : "") + ")"
+            : ""
+        }`,
+        cust.name
+      );
+  };
+
   // Minimal plan info used by PlanStatus
   const plan = useMemo(
     () => ({
@@ -337,6 +384,25 @@ const App: React.FC = () => {
     setCurrentPage(Page.Feedback);
   };
 
+  // Placeholder for funnel complete handler
+  const handleFunnelComplete = () => {
+    setSelectedFeedbackCustomer(null);
+    setCurrentPage(Page.Dashboard);
+  };
+
+  // Placeholder for funnel close handler
+  const handleCloseFunnel = () => {
+    setSelectedFeedbackCustomer(null);
+    setCurrentPage(Page.Dashboard);
+  };
+
+  // Placeholder for feedback back handler
+  const handleBackFromFeedback = () => {
+    setSelectedFeedbackCustomer(null);
+    setSelectedFeedbackType(null);
+    setCurrentPage(Page.Dashboard);
+  };
+
   // Allow dashboard summary cards to open feedback without a specific customer
   React.useEffect(() => {
     (window as any).openFeedbackFromDashboard = (
@@ -355,15 +421,62 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // Add a feedback entry for a customer (in-memory)
+  // Add a feedback entry (persisted to customers state). If no matching customer, bucket under a synthetic "Public Feedback" contact.
   const addFeedback = (
-    _customerId: string,
-    _text: string,
-    _sentiment: "positive" | "negative",
-    _phone?: string
+    customerId: string,
+    text: string,
+    sentiment: "positive" | "negative",
+    phone?: string,
+    rating?: number
   ) => {
-    // No-op: feedback storage is disabled per requirement
-    return;
+    const newEntry = {
+      id: `fb-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      text: (text || "").trim(),
+      sentiment,
+      date: new Date(),
+      phone,
+      rating: typeof rating === "number" ? rating : undefined,
+    } as const;
+
+    setCustomers((prev) => {
+      // Helper to append to a specific index
+      const appendAt = (arr: typeof prev, index: number) =>
+        arr.map((c, i) =>
+          i === index
+            ? { ...c, feedback: [...(c.feedback || []), newEntry] }
+            : c
+        );
+
+      // 1) Try by explicit customerId
+      let idx = prev.findIndex((c) => c.id === customerId);
+      if (idx >= 0) {
+        return appendAt(prev, idx);
+      }
+
+      // 2) Try by phone (normalized)
+      if (phone) {
+        const norm = (s: string) => s.replace(/\D/g, "");
+        idx = prev.findIndex((c) => norm(c.phone) === norm(phone));
+        if (idx >= 0) return appendAt(prev, idx);
+      }
+
+      // 3) Fallback bucket: create or reuse synthetic customer
+      const bucketId = "public-feedback";
+      const existingBucketIdx = prev.findIndex((c) => c.id === bucketId);
+      if (existingBucketIdx >= 0) {
+        return appendAt(prev, existingBucketIdx);
+      }
+      // Create new synthetic bucket at the top
+      const bucket = {
+        id: bucketId,
+        name: "Public Feedback",
+        phone: "N/A",
+        status: CustomerStatus.Reviewed,
+        addedAt: new Date(),
+        feedback: [newEntry],
+      } as Customer;
+      return [bucket, ...prev];
+    });
   };
 
   // Exposed handler for dashboard rows: accept free-text feedback and auto-classify sentiment
@@ -403,12 +516,13 @@ const App: React.FC = () => {
       sentiment = "negative";
     else sentiment = lower.length > 60 ? "positive" : "negative"; // fallback heuristic
 
-    addFeedback(customerId, text.trim(), sentiment);
+    addFeedback(customerId, text.trim(), sentiment, undefined, undefined);
   };
 
   // --- Client-side navigation & history management ---
   const mapPathToPage = (path: string): Page => {
-    const p = path.toLowerCase();
+    const p = stripBase(path).toLowerCase();
+    if (p === "/" || p === "" || p === "/dashboard") return Page.Dashboard;
     if (p === "/messenger" || p === "/settings") return Page.Settings; // new canonical /messenger
     if (p === "/feedback" || p === "/feeback") return Page.Feedback; // alias support
     if (p === "/quick-feedback" || p === "/feeback-quick")
@@ -419,13 +533,13 @@ const App: React.FC = () => {
   const pageToPath = (page: Page): string => {
     switch (page) {
       case Page.Settings:
-        return "/messenger"; // new canonical path
+        return joinBase("messenger"); // new canonical path
       case Page.Feedback:
-        return "/feedback"; // canonical
+        return joinBase("feedback"); // canonical
       case Page.QuickFeedback:
-        return "/quick-feedback";
+        return joinBase("quick-feedback");
       default:
-        return "/";
+        return joinBase(""); // dashboard default (/business/)
     }
   };
 
@@ -459,7 +573,7 @@ const App: React.FC = () => {
     ) => {
       setSelectedFeedbackCustomer(null);
       setSelectedFeedbackType(type);
-      navigate(Page.Feedback);
+      setCurrentPage(Page.Feedback);
     };
     return () => {
       try {
@@ -468,29 +582,15 @@ const App: React.FC = () => {
         (window as any).openFeedbackFromDashboard = undefined;
       }
     };
-  }, [navigate]);
+  }, []);
 
-  const hideSidebar = currentPage === Page.Feedback; // hide only on feedback page per requirement
   return (
-    <div
-      className={`flex h-screen bg-gray-50 font-sans text-gray-800 ${
-        hideSidebar ? "pl-0" : ""
-      }`}
-    >
-      {!hideSidebar && (
-        <Sidebar
-          currentPage={currentPage}
-          setCurrentPage={(p) => {
-            // Reset feedback-specific selections when navigating away
-            if (p !== Page.Feedback) {
-              setSelectedFeedbackCustomer(null);
-              setSelectedFeedbackType(null);
-            }
-            navigate(p);
-          }}
-        />
+    <div className="flex">
+      {/* Hide sidebar on Feedback page */}
+      {currentPage !== Page.Feedback && (
+        <Sidebar currentPage={currentPage} setCurrentPage={navigate} />
       )}
-      <main className={`flex-1 overflow-y-auto ${hideSidebar ? "w-full" : ""}`}>
+      <main className="flex-1 min-h-screen bg-gray-50">
         {currentPage === Page.Dashboard && (
           <DashboardPage
             customers={customers}
@@ -503,25 +603,39 @@ const App: React.FC = () => {
             onBulkAddCustomers={handleBulkAddCustomers}
             onOpenFunnel={handleOpenFunnel}
             onOpenFeedback={handleOpenFeedback}
-            onAddFeedback={onAddFeedback}
+            onAddFeedback={addFeedback}
+            onClearCustomers={handleClearCustomers}
           />
         )}
         {currentPage === Page.Settings && (
           <SettingsPage
             customers={customers}
-            messageTemplate={messageTemplate}
-            setMessageTemplate={setMessageTemplate}
             businessName={businessName}
+            setBusinessName={setBusinessName}
             googleReviewLink={googleReviewLink}
             setGoogleReviewLink={setGoogleReviewLink}
+            messageTemplate={messageTemplate}
+            setMessageTemplate={setMessageTemplate}
             twilioAccountSid={twilioAccountSid}
             setTwilioAccountSid={setTwilioAccountSid}
             twilioAuthToken={twilioAuthToken}
             setTwilioAuthToken={setTwilioAuthToken}
             twilioPhoneNumber={twilioPhoneNumber}
             setTwilioPhoneNumber={setTwilioPhoneNumber}
+            onMarkCustomerSent={markCustomerSent}
+            onMarkCustomerFailed={markCustomerFailed}
           />
         )}
+        {/* If you have a Funnel page, use the correct enum value. If not, comment this out. */}
+        {/* {currentPage === Page.Funnel && selectedFeedbackCustomer && (
+          <FunnelPage
+            customer={selectedFeedbackCustomer}
+            businessName={businessName}
+            googleReviewLink={googleReviewLink}
+            onComplete={handleFunnelComplete}
+            onClose={handleCloseFunnel}
+          />
+        )} */}
         {currentPage === Page.Feedback && (
           <FeedbackPage
             customers={customers}
@@ -530,18 +644,14 @@ const App: React.FC = () => {
             addFeedback={addFeedback}
             googleReviewLink={googleReviewLink}
             addCustomer={handleAddCustomer}
-            onBack={() => {
-              setSelectedFeedbackCustomer(null);
-              setSelectedFeedbackType(null);
-              navigate(Page.Dashboard);
-            }}
+            onBack={handleBackFromFeedback}
           />
         )}
         {currentPage === Page.QuickFeedback && (
           <QuickFeedbackPage
             customers={customers}
             onAddCustomer={handleAddCustomer}
-            onAddFeedback={onAddFeedback}
+            onAddFeedback={addFeedback}
           />
         )}
       </main>
