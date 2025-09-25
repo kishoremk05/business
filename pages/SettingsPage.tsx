@@ -3,10 +3,15 @@ import { LinkIcon, ExclamationTriangleIcon } from "../components/icons";
 
 import { Customer } from "../types";
 
-// Central API base for server requests (overridable via Vite env)
-const API_BASE =
-  (import.meta as any).env?.VITE_SMS_API_BASE ||
-  "https://api-sms-server.onrender.com";
+// Central API base resolution (env override -> localhost dev -> hosted fallback)
+let API_BASE: string = (import.meta as any).env?.VITE_SMS_API_BASE || "";
+if (!API_BASE) {
+  if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
+    API_BASE = "http://localhost:3002";
+  } else {
+    API_BASE = "https://api-sms-server.onrender.com";
+  }
+}
 
 interface SettingsPageProps {
   customers: Customer[];
@@ -360,7 +365,9 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
     try {
       const url = `${API_BASE}/wa-verify?accessToken=${encodeURIComponent(
         waAccessToken
-      )}&phoneNumberId=${encodeURIComponent(waPhoneNumberId)}${waDebug ? "&debug=1" : ""}`;
+      )}&phoneNumberId=${encodeURIComponent(waPhoneNumberId)}${
+        waDebug ? "&debug=1" : ""
+      }`;
       const resp = await fetch(url);
       const data = await resp.json();
       if (!resp.ok || !data.success) {
@@ -369,7 +376,9 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
         );
       } else {
         setWaVerifyStatus(
-          `Verified: ${data.info?.display_phone_number || waPhoneNumberId} (${data.info?.verified_name || "unverified name"})`
+          `Verified: ${data.info?.display_phone_number || waPhoneNumberId} (${
+            data.info?.verified_name || "unverified name"
+          })`
         );
       }
     } catch (e: any) {
@@ -399,7 +408,9 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
       const data = await resp.json();
       if (!resp.ok || !data.success) {
         setWaContactStatus(
-          `Contact check failed: ${data.error || resp.status}. ${data.hint || ""}`
+          `Contact check failed: ${data.error || resp.status}. ${
+            data.hint || ""
+          }`
         );
       } else {
         const c = data.result?.contacts?.[0];
@@ -452,24 +463,24 @@ const SettingsPage: React.FC<SettingsPageProps> = ({
             },
             ...(waDebug ? { debug: true } : {}),
           };
-            const resp = await fetch(`${API_BASE}/send-whatsapp-template`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
+          const resp = await fetch(`${API_BASE}/send-whatsapp-template`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok || !data.success) {
+            const errMsg = data.error || resp.status;
+            failures.push({
+              name: cust.name,
+              phone: cust.phone,
+              error: String(errMsg),
             });
-            const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || !data.success) {
-              const errMsg = data.error || resp.status;
-              failures.push({
-                name: cust.name,
-                phone: cust.phone,
-                error: String(errMsg),
-              });
-              onMarkCustomerFailed?.(cust.id, String(errMsg));
-            } else {
-              success++;
-              onMarkCustomerSent?.(cust.id, "wa-template");
-            }
+            onMarkCustomerFailed?.(cust.id, String(errMsg));
+          } else {
+            success++;
+            onMarkCustomerSent?.(cust.id, "wa-template");
+          }
         } catch (e: any) {
           failures.push({
             name: cust.name,

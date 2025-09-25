@@ -8,10 +8,18 @@ import FeedbackPage from "./pages/FeedbackPage";
 import QuickFeedbackPage from "./pages/QuickFeedbackPage";
 // import { EnvelopeIcon } from "./components/icons";
 
-// Add an API base that points to deployed server, overridable via Vite env
-const API_BASE =
-  (import.meta as any).env?.VITE_SMS_API_BASE ||
-  "https://api-sms-server.onrender.com";
+// Determine API base at runtime.
+// Priority: explicit Vite env -> same-origin relative (if backend served together) -> local dev server (if reachable) -> fallback hosted server.
+let API_BASE: string =
+  (import.meta as any).env?.VITE_SMS_API_BASE || "";
+if (!API_BASE) {
+  // If running on localhost AND port 3002 likely hosts the backend, prefer it.
+  if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
+    API_BASE = "http://localhost:3002";
+  } else {
+    API_BASE = "https://api-sms-server.onrender.com"; // fallback deployed instance
+  }
+}
 
 // Respect Vite base path (works in dev and GitHub Pages)
 const BASE_URL: string = (import.meta as any).env?.BASE_URL || "/";

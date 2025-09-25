@@ -47,7 +47,18 @@ npm run server
 
 ```powershell
 npm run dev
-# Frontend will proxy /send-whatsapp etc to http://localhost:3002
+# OR run both backend + frontend in one terminal:
+npm run dev:full
+```
+
+The app auto-selects API base in this order:
+1. `VITE_SMS_API_BASE` (if set at build time)
+2. `http://localhost:3002` when running on localhost
+3. Fallback hosted API `https://api-sms-server.onrender.com`
+
+Set your own by creating `.env` with:
+```
+VITE_SMS_API_BASE=http://localhost:3002
 ```
 
 ## WhatsApp API Endpoints
